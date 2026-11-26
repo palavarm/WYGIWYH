@@ -501,3 +501,38 @@ class DryRunUpdatedTransactionForm(BulkEditTransactionForm):
                 self.fields["transaction"].queryset = Transaction.objects.filter(
                     id=transaction.id
                 )
+
+
+class ApplyRulesToAllTransactionsForm(forms.Form):
+    rules = forms.ModelMultipleChoiceField(
+        queryset=TransactionRule.objects.none(),
+        required=False,
+        label=_("Rules"),
+        help_text=_(
+            "Leave empty to run all active rules. Rules run on every existing "
+            "transaction regardless of their create/update/delete triggers."
+        ),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["rules"].queryset = TransactionRule.objects.filter(
+            active=True
+        ).order_by("order", "id")
+
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            "rules",
+            Alert(
+                _(
+                    "Running rules modifies existing transactions and cannot be undone. "
+                    "You will see a preview before anything is changed."
+                ),
+                dismiss=False,
+                css_class="alert-warning",
+            ),
+            FormActions(
+                NoClassSubmit("submit", _("Preview"), css_class="btn btn-primary"),
+            ),
+        )

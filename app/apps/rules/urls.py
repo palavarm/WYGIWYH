@@ -8,6 +8,11 @@ urlpatterns = [
         name="rules_index",
     ),
     path(
+        "rules/apply-to-all/",
+        views.apply_rules_to_all_transactions_view,
+        name="rules_apply_to_all",
+    ),
+    path(
         "rules/list/",
         views.rules_list,
         name="rules_list",

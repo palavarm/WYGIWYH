@@ -8,6 +8,11 @@
     {% spaceless %}
       <div>{% translate 'Rules' %}</div>
     {% endspaceless %}
+    <a class="btn btn-secondary btn-sm"
+       role="button"
+       hx-get="{% url 'rules_apply_to_all' %}"
+       hx-target="#generic-offcanvas">
+      <i class="fa-solid fa-play fa-fw"></i>{% translate 'Run on all transactions' %}</a>
   </div>
 
   <div class="card bg-base-100 shadow-xl">

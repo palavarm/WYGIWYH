@@ -24,6 +24,7 @@ from apps.rules.forms import (
     DryRunCreatedTransacion,
     DryRunDeletedTransacion,
     DryRunUpdatedTransactionForm,
+    ApplyRulesToAllTransactionsForm,
 )
 from apps.rules.models import (
     TransactionRule,
@@ -33,7 +34,11 @@ from apps.rules.models import (
 from apps.common.models import SharedObject
 from apps.common.forms import SharedObjectForm
 from apps.common.decorators.demo import disabled_on_demo
-from apps.rules.tasks import check_for_transaction_rules
+from apps.rules.tasks import (
+    check_for_transaction_rules,
+    apply_rules_to_all_transactions,
+    preview_rules_on_all_transactions,
+)
 from apps.common.middleware.thread_local import get_current_user
 from apps.rules.signals import transaction_created, transaction_updated
 from apps.rules.utils.transactions import serialize_transaction
@@ -592,4 +597,44 @@ def dry_run_rule_updated(request, pk):
         request,
         "rules/fragments/transaction_rule/dry_run/updated.html",
         {"form": form, "rule": rule, "logs": logs, "results": results},
+    )
+
+
+@only_htmx
+@login_required
+@disabled_on_demo
+@require_http_methods(["GET", "POST"])
+def apply_rules_to_all_transactions_view(request):
+    preview = None
+    selected = []
+    if request.method == "POST":
+        form = ApplyRulesToAllTransactionsForm(request.POST)
+        if form.is_valid():
+            selected = list(form.cleaned_data["rules"])
+            rule_ids = [r.id for r in selected] if selected else None
+
+            if request.POST.get("confirm"):
+                apply_rules_to_all_transactions.defer(
+                    user_id=request.user.id,
+                    rule_ids=rule_ids,
+                )
+                messages.success(
+                    request,
+                    _("Rules are being applied to all transactions in the background"),
+                )
+                return HttpResponse(
+                    status=204,
+                    headers={"HX-Trigger": "updated, hide_offcanvas"},
+                )
+
+            preview = preview_rules_on_all_transactions(
+                user_id=request.user.id, rule_ids=rule_ids
+            )
+    else:
+        form = ApplyRulesToAllTransactionsForm()
+
+    return render(
+        request,
+        "rules/fragments/apply_to_all.html",
+        {"form": form, "preview": preview, "selected_rules": selected},
     )

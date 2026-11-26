@@ -134,8 +134,17 @@ def check_for_transaction_rules(
     is_hard_deleted=False,
     dry_run=False,
     rule_id=None,
+    rule_ids=None,
+    trigger_only=False,
 ):
+    # trigger_only: only evaluate triggers (no actions, nothing is saved) and return
+    # the ids of the rules whose trigger matched. Leaves the current user untouched.
+    manage_user = not dry_run and not trigger_only
+    matched_rule_ids = []
+
     def _log(message: str, level="info"):
+        if trigger_only:
+            return
         if dry_run:
             if logs is not None:
                 logs.append(message)
@@ -540,7 +549,7 @@ def check_for_transaction_rules(
         return transaction
 
     user = get_user_model().objects.get(id=user_id)
-    if not dry_run:
+    if manage_user:
         write_current_user(user)
     logs = [] if dry_run else None
     dry_run_results = DryRunResults(dry_run=dry_run)
@@ -590,6 +599,12 @@ def check_for_transaction_rules(
             # Select rules based on the signal type
             if dry_run and rule_id:
                 rules = TransactionRule.objects.filter(id=rule_id)
+            elif rule_ids is not None:
+                # Explicit run (e.g. bulk apply): ignore the on_create/on_update/
+                # on_delete flags, only run the requested active rules.
+                rules = TransactionRule.objects.filter(
+                    active=True, id__in=rule_ids
+                ).order_by("order", "id")
             elif signal == "transaction_created":
                 rules = TransactionRule.objects.filter(
                     active=True, on_create=True
@@ -612,6 +627,10 @@ def check_for_transaction_rules(
             # Process the rules as before
             for rule in rules:
                 _log("Testing rule: {}".format(rule.name))
+                if trigger_only:
+                    if simple.eval(rule.trigger):
+                        matched_rule_ids.append(rule.id)
+                    continue
                 if simple.eval(rule.trigger):
                     _log("Initial trigger matched!")
                     # For deleted transactions, we want to limit what actions can be performed
@@ -767,12 +786,110 @@ def check_for_transaction_rules(
             level="error",
         )
         if not dry_run:
-            delete_current_user()
+            if manage_user:
+                delete_current_user()
             raise e
 
-    if not dry_run:
+    if manage_user:
         delete_current_user()
+
+    if trigger_only:
+        return matched_rule_ids
 
     return logs, dry_run_results.results
 
     return None
+
+
+@app.task(name="apply_rules_to_all_transactions")
+def apply_rules_to_all_transactions(user_id, rule_ids=None):
+    """Run rules against every existing (non-deleted) transaction the user can see.
+
+    ``rule_ids`` limits the run to those rules; ``None`` runs every active rule.
+    Rules run regardless of their on_create/on_update/on_delete flags, as if each
+    transaction had just been updated. A failure on one transaction is logged and
+    does not stop the rest.
+    """
+    user = get_user_model().objects.get(id=user_id)
+    write_current_user(user)
+    try:
+        transaction_ids = list(
+            Transaction.objects.order_by("date", "id").values_list("id", flat=True)
+        )
+        if rule_ids is None:
+            rule_ids = list(
+                TransactionRule.objects.filter(active=True).values_list(
+                    "id", flat=True
+                )
+            )
+        else:
+            rule_ids = list(rule_ids)
+    finally:
+        delete_current_user()
+
+    processed = failed = 0
+    if not rule_ids:
+        return {"processed": 0, "failed": 0}
+
+    for transaction_id in transaction_ids:
+        try:
+            check_for_transaction_rules(
+                instance_id=transaction_id,
+                user_id=user_id,
+                signal="transaction_updated",
+                rule_ids=rule_ids,
+            )
+            processed += 1
+        except Exception:
+            failed += 1
+            logger.error(
+                "Error applying rules to transaction %s", transaction_id, exc_info=True
+            )
+
+    logger.info("Applied rules to %s transaction(s), %s failed", processed, failed)
+    return {"processed": processed, "failed": failed}
+
+
+def preview_rules_on_all_transactions(user_id, rule_ids=None):
+    """Count how many transactions each rule's trigger matches, changing nothing.
+
+    Must be called with the current user already set (as in a request). Returns
+    ``{"total": int, "failed": int, "rules": [{"rule": TransactionRule, "matches": int}]}``.
+    """
+    rules = TransactionRule.objects.filter(active=True)
+    if rule_ids is not None:
+        rules = rules.filter(id__in=rule_ids)
+    rules = list(rules.order_by("order", "id"))
+    rule_ids = [r.id for r in rules]
+    counts = {r.id: 0 for r in rules}
+
+    transaction_ids = list(
+        Transaction.objects.order_by("date", "id").values_list("id", flat=True)
+    )
+    failed = 0
+    if rule_ids:
+        for transaction_id in transaction_ids:
+            try:
+                matched = check_for_transaction_rules(
+                    instance_id=transaction_id,
+                    user_id=user_id,
+                    signal="transaction_updated",
+                    rule_ids=rule_ids,
+                    trigger_only=True,
+                )
+            except Exception:
+                failed += 1
+                logger.error(
+                    "Error previewing rules on transaction %s",
+                    transaction_id,
+                    exc_info=True,
+                )
+                continue
+            for rule_id in matched:
+                counts[rule_id] += 1
+
+    return {
+        "total": len(transaction_ids),
+        "failed": failed,
+        "rules": [{"rule": r, "matches": counts[r.id]} for r in rules],
+    }

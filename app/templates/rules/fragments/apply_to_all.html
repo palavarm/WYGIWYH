@@ -1,0 +1,60 @@
+{% extends 'extends/offcanvas.html' %}
+{% load i18n %}
+{% load crispy_forms_tags %}
+
+{% block title %}{% trans 'Run rules on all transactions' %}{% endblock %}
+
+{% block body %}
+  <form hx-post="{% url 'rules_apply_to_all' %}" hx-target="#generic-offcanvas"
+        hx-indicator="closest form" class="show-loading" novalidate>
+    {% crispy form %}
+  </form>
+
+  {% if preview %}
+    <hr class="hr my-3">
+    <div class="mb-3">
+      <div class="font-bold mb-2">{% trans 'Preview' %}</div>
+      <p class="text-sm mb-2">
+        {% blocktrans with total=preview.total %}Checked {{ total }} transaction(s). Nothing has been changed yet.{% endblocktrans %}
+      </p>
+      {% if preview.rules %}
+        <div class="overflow-x-auto">
+          <table class="table table-sm">
+            <thead>
+            <tr>
+              <th>{% trans 'Rule' %}</th>
+              <th class="text-end">{% trans 'Matching transactions' %}</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for item in preview.rules %}
+              <tr>
+                <td>{{ item.rule.name }}</td>
+                <td class="text-end">{{ item.matches }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="alert alert-info">{% trans 'No active rules to run.' %}</div>
+      {% endif %}
+      {% if preview.failed %}
+        <div class="alert alert-warning mt-2">
+          {% blocktrans with failed=preview.failed %}{{ failed }} transaction(s) could not be checked because a trigger raised an error.{% endblocktrans %}
+        </div>
+      {% endif %}
+    </div>
+
+    {% if preview.rules %}
+      <form hx-post="{% url 'rules_apply_to_all' %}" hx-target="#generic-offcanvas" novalidate>
+        {% csrf_token %}
+        <input type="hidden" name="confirm" value="1">
+        {% for rule in selected_rules %}
+          <input type="hidden" name="rules" value="{{ rule.id }}">
+        {% endfor %}
+        <button type="submit" class="btn btn-error">{% trans 'Confirm and run' %}</button>
+      </form>
+    {% endif %}
+  {% endif %}
+{% endblock %}
